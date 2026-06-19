@@ -1,0 +1,16 @@
+# torch / torchaudio are CUDA-build specific — install separately first, matching
+# your GPU's CUDA version, via https://pytorch.org/get-started/locally/
+# e.g. (CUDA 12.8): pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
+# CPU only: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+transformers==5.12.0
+accelerate==1.14.0
+datasets==5.0.0
+evaluate==0.4.6
+jiwer==4.0.0
+soundfile==0.14.0
+soxr==1.1.0
+librosa==0.11.0
+numpy==2.4.6
+scipy==1.17.1
+requests==2.34.2

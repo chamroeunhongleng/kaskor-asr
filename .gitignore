@@ -1,0 +1,22 @@
+# Virtual env
+venv/
+
+# Secrets — real values live in .env (not committed); .env.example is the template
+.env
+
+# Large generated artifacts — never commit these (model weights live on Hugging Face Hub,
+# audio dataset is 23G+44G — share via HF Datasets / shared drive, not GitHub)
+checkpoints/
+datasets/
+*.npy
+*.safetensors
+*.bin
+*.pt
+*.ckpt
+
+# Logs / run state
+*_log.txt
+*_err.txt
+eval_history.json
+__pycache__/
+*.pyc
