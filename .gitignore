@@ -1,5 +1,7 @@
 # Virtual env
 venv/
+.venv/
+env/
 
 # Secrets — real values live in .env (not committed); .env.example is the template
 .env
@@ -8,6 +10,7 @@ venv/
 # audio dataset is 23G+44G — share via HF Datasets / shared drive, not GitHub)
 checkpoints/
 datasets/
+kaskor-asr-*-export/
 *.npy
 *.safetensors
 *.bin
@@ -18,5 +21,14 @@ datasets/
 *_log.txt
 *_err.txt
 eval_history.json
+
+# Python
 __pycache__/
 *.pyc
+*.egg-info/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
