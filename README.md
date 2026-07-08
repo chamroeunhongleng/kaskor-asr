@@ -1,5 +1,9 @@
 # KASEKOR ASR
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Model](https://img.shields.io/badge/model-whisper--small-blue)](https://huggingface.co/openai/whisper-small)
+[![CER](https://img.shields.io/badge/CER-17.48%25-brightgreen)](#results)
+
 Fine-tuning [`openai/whisper-small`](https://huggingface.co/openai/whisper-small) for **Khmer (ខ្មែរ) speech-to-text**.
 
 This repository contains the full, reproducible pipeline used to build KASEKOR v0.0 — from raw audio to a trained, exportable model — along with evaluation and inference tooling.
