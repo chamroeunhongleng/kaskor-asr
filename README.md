@@ -31,9 +31,26 @@ The scripts are numbered in the order they run. Each is standalone and reads/wri
 | 9    | `scripts/train.py`           | Fine-tune Whisper-small (CER-primary, NFC-normalised, 16 kHz-verified). |
 | —    | `scripts/run_eval.py`        | Standalone evaluation of a checkpoint on the val set.            |
 | 10   | `scripts/save_model.py`      | Export the best checkpoint as a self-contained model package.   |
+| —    | `scripts/push_to_hub.py`     | Publish the exported model to the Hugging Face Hub (one-time, so the `kaskor` CLI can auto-download it). |
 | —    | `scripts/transcribe.py`      | Inference from a file, folder, or microphone.                   |
 
-## Getting started
+## Install the CLI
+
+For transcription only — no need to clone the repo or set up the training pipeline:
+
+```bash
+pip install git+https://github.com/chamroeunhongleng/kaskor-asr.git
+kaskor audio.wav
+kaskor audio.wav --ref "ខ្ញុំទៅផ្សារ"
+kaskor --mic --mic-seconds 15
+kaskor audio/ --batch --output results.tsv
+```
+
+The CLI downloads the trained model from the Hugging Face Hub the first time it runs. Pass `--model /path/to/checkpoint` to use a local checkpoint instead (e.g. one produced by this repo's own training pipeline). Microphone input needs the optional extra: `pip install "kaskor-asr[mic] @ git+https://github.com/chamroeunhongleng/kaskor-asr.git"`.
+
+## Getting started (full training pipeline)
+
+The rest of this README covers reproducing the training pipeline from raw audio — not needed if you only want to transcribe with the released model above.
 
 ### 1. Install dependencies
 
@@ -84,12 +101,26 @@ python scripts/transcribe.py --mic --mic-seconds 15
 python scripts/transcribe.py audio/ --batch
 ```
 
+This is the same code as the installable `kaskor` command (see [Install the CLI](#install-the-cli)) — use whichever fits: `python scripts/transcribe.py` when working inside a clone of this repo, `kaskor` when installed via pip elsewhere.
+
+### 6. Publish the model (optional, one-time)
+
+So the `kaskor` CLI can download the trained model instead of requiring a local checkpoint:
+
+```bash
+pip install huggingface_hub
+huggingface-cli login
+python scripts/push_to_hub.py
+```
+
 ## Repository layout
 
 ```
 data/            train / val / test manifests (audio_path, transcript, speaker_id)
 scripts/         the numbered pipeline + eval + inference
-requirements.txt Python dependencies (torch installed separately)
+kaskor/          installable package backing the `kaskor` CLI (pip install git+...)
+pyproject.toml   packaging config for the `kaskor` console script
+requirements.txt Python dependencies for the full training pipeline (torch installed separately)
 .env.example     template for Telegram notification secrets
 ```
 

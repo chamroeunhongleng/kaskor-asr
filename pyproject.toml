@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kaskor-asr"
+version = "0.0.1"
+description = "Khmer (ខ្មែរ) speech-to-text — Whisper fine-tuned inference CLI"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Chamroeun Hongleng" }]
+dependencies = [
+    "transformers>=5.12.0",
+    "torch",
+    "soundfile>=0.14.0",
+    "numpy>=2.4.0",
+]
+
+[project.optional-dependencies]
+mic = ["sounddevice"]
+resample = ["soxr", "librosa"]
+eval = ["evaluate", "jiwer"]
+
+[project.urls]
+Repository = "https://github.com/chamroeunhongleng/kaskor-asr"
+
+[project.scripts]
+kaskor = "kaskor.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["kaskor*"]
