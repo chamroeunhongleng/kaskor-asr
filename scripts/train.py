@@ -308,6 +308,13 @@ def _allow_sleep():
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def _flag_value(name, cast, default):
+    """Read `--name VALUE` out of argv without disturbing the existing flag style."""
+    if name in sys.argv:
+        return cast(sys.argv[sys.argv.index(name) + 1])
+    return default
+
+
 def main():
     # ── Parse --night N ───────────────────────────────────────────────────────
     night_steps = None
@@ -315,6 +322,16 @@ def main():
         night_steps = int(sys.argv[sys.argv.index("--night") + 1])
     no_eval = "--no-eval" in sys.argv
     force   = "--force" in sys.argv
+
+    # ── Overrides so train_loop.py can drive a round without editing this file ──
+    # The loop needs to raise the epoch ceiling (5 epochs are already done) and
+    # step the learning rate / augmentation down a ladder between rounds.
+    global NUM_EPOCHS, EPOCHS_PER_RUN, LR, AUGMENT_PROB, WEIGHT_DECAY
+    NUM_EPOCHS     = _flag_value("--max-epochs",     int,   NUM_EPOCHS)
+    EPOCHS_PER_RUN = _flag_value("--epochs-per-run", int,   EPOCHS_PER_RUN)
+    LR             = _flag_value("--lr",             float, LR)
+    AUGMENT_PROB   = _flag_value("--augment-prob",   float, AUGMENT_PROB)
+    WEIGHT_DECAY   = _flag_value("--weight-decay",   float, WEIGHT_DECAY)
 
     plateau_msg = check_plateau(load_eval_history(), PLATEAU_MIN_DELTA)
     if plateau_msg and not force:
@@ -325,19 +342,46 @@ def main():
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
-    resume_ckpt, completed_epochs = find_latest_checkpoint(OUTPUT_DIR)
-    resume_step = int(resume_ckpt.split("-")[-1]) if resume_ckpt else 0
-    target_epochs = completed_epochs + EPOCHS_PER_RUN
+    # ── Round mode (used by train_loop.py) ────────────────────────────────────
+    # A resumed run restores optimizer AND scheduler state, which silently
+    # overrides --lr: the param-group LR comes back from optimizer.pt and the
+    # schedule picks up where it left off. That makes an LR ladder a no-op.
+    # Round mode therefore starts each round as its own short fine-tune —
+    # weights from --init-from, fresh optimizer, fresh warmup, own output dir so
+    # restarted step numbering can't collide with the existing checkpoint-NNNNN.
+    init_from      = _flag_value("--init-from", str, None)
+    output_subdir  = _flag_value("--output-subdir", str, None)
+    round_mode     = init_from is not None or output_subdir is not None
 
-    if completed_epochs >= NUM_EPOCHS:
-        print(f"Already finished {completed_epochs}/{NUM_EPOCHS} epochs. Training complete!")
-        return
+    global OUTPUT_DIR
+    if output_subdir:
+        OUTPUT_DIR = OUTPUT_DIR / output_subdir
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    target_epochs = min(target_epochs, NUM_EPOCHS)
-    if resume_ckpt:
-        print(f"Resuming from {resume_ckpt} (epoch {completed_epochs} done → training epoch {completed_epochs + 1})")
+    if round_mode:
+        resume_ckpt = None                       # fresh optimizer/scheduler
+        resume_step = 0
+        completed_epochs = 0
+        target_epochs = EPOCHS_PER_RUN           # relative, not absolute
+        model_init = init_from or find_latest_checkpoint(Path("checkpoints"))[0] or BASE_MODEL
+        print(f"[round mode] init weights from {model_init}")
+        print(f"[round mode] fresh optimizer, lr={LR:g}, aug={AUGMENT_PROB}, wd={WEIGHT_DECAY}, "
+              f"{target_epochs} epoch(s) -> {OUTPUT_DIR}")
     else:
-        print(f"Starting fresh — training epoch 1 of {NUM_EPOCHS}")
+        resume_ckpt, completed_epochs = find_latest_checkpoint(OUTPUT_DIR)
+        resume_step = int(resume_ckpt.split("-")[-1]) if resume_ckpt else 0
+        target_epochs = completed_epochs + EPOCHS_PER_RUN
+
+        if completed_epochs >= NUM_EPOCHS:
+            print(f"Already finished {completed_epochs}/{NUM_EPOCHS} epochs. Training complete!")
+            return
+
+        target_epochs = min(target_epochs, NUM_EPOCHS)
+        model_init = resume_ckpt if resume_ckpt else BASE_MODEL
+        if resume_ckpt:
+            print(f"Resuming from {resume_ckpt} (epoch {completed_epochs} done → training epoch {completed_epochs + 1})")
+        else:
+            print(f"Starting fresh — training epoch 1 of {NUM_EPOCHS}")
 
     if night_steps:
         _prevent_sleep()
@@ -349,8 +393,7 @@ def main():
     # Load from checkpoint if resuming — this gets epoch 1 weights into the model
     # BEFORE torch.compile wraps it. compile adds _orig_mod. prefix to state keys,
     # so HF Trainer's resume can't remap checkpoint keys; we pre-load weights here.
-    model_source = resume_ckpt if resume_ckpt else BASE_MODEL
-    model = WhisperForConditionalGeneration.from_pretrained(model_source)
+    model = WhisperForConditionalGeneration.from_pretrained(model_init)
 
     model.generation_config.language           = LANGUAGE
     model.generation_config.task               = TASK
@@ -372,6 +415,11 @@ def main():
     # night mode: stop at fixed step, skip eval (saves ~2h)
     # no-eval mode: run full epoch but defer eval to run_eval.py after a rest
     max_steps_val  = (resume_step + night_steps) if night_steps else -1
+    # --max-steps is the same hard stop as --night but without sleep-prevention
+    # or the shutdown at the end, so a few steps can be run as a smoke test.
+    test_steps     = _flag_value("--max-steps", int, None)
+    if test_steps:
+        max_steps_val = resume_step + test_steps
     eval_strat     = "no" if (night_steps or no_eval) else "epoch"
 
     args = Seq2SeqTrainingArguments(
@@ -390,10 +438,15 @@ def main():
         eval_strategy               = eval_strat,
         save_strategy               = "steps",
         save_steps                  = 500,
-        save_total_limit            = 3,
+        # Each checkpoint is 2.8 GB (1.9 GB of that is optimizer state). A round
+        # is a self-contained fine-tune whose only lasting artifact is its final
+        # weights, so keeping 3 per round would cost ~84 GB across a 10-round run.
+        save_total_limit            = 1 if round_mode else 3,
         logging_steps               = 25,
         predict_with_generate       = True,
-        generation_max_length       = 225,
+        # See run_eval.py — 225 truncated half the eval set at ~102 Khmer chars,
+        # so in-training CER was measuring truncation rather than the model.
+        generation_max_length       = 448,
         generation_num_beams        = 2,
         load_best_model_at_end      = False,
         metric_for_best_model       = "cer",
@@ -427,6 +480,13 @@ def main():
     trainer.save_model(str(final_ckpt_dir))
     trainer.save_state()
     print(f"Checkpoint saved → {final_ckpt_dir}")
+
+    if round_mode:
+        # Round checkpoints get loaded standalone by eval/diagnostics, so keep a
+        # processor beside the weights. The marker line is what train_loop.py
+        # parses to find this round's output.
+        processor.save_pretrained(str(final_ckpt_dir))
+        print(f"ROUND_CHECKPOINT={final_ckpt_dir}")
 
     if night_steps:
         # Last logged loss

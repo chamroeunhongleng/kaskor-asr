@@ -21,9 +21,14 @@ import numpy as np
 import soundfile as sf
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
 
-DEFAULT_MODEL = "chamroeunhongleng/kaskor-asr"  # Hugging Face Hub repo id
+# Hugging Face Hub repo id. Note the spelling: the GitHub repo and CLI are
+# "kaskor", but the released model artifact is "kasekor-asr-v0.0" under the
+# "Hongleng" account. "chamroeunhongleng/kaskor-asr" does not exist on the Hub
+# (401) — pointing here meant every `pip install` user hit a download failure.
+DEFAULT_MODEL = "Hongleng/kasekor-asr-v0.0"
 SR = 16_000
 MAX_SAMPLES = SR * 30  # Whisper's 30 s receptive field
+MAX_NEW_TOKENS = 440   # max_target_positions (448) - 4 prefix tokens; see transcribe_audio()
 
 
 def normalize_khmer(text: str) -> str:
@@ -69,7 +74,12 @@ def transcribe_audio(audio: np.ndarray, processor, model, device: str) -> str:
             language="km",
             task="transcribe",
             num_beams=5,
-            max_new_tokens=225,
+            # Khmer costs ~2.2 Whisper tokens per character (byte-fallback BPE:
+            # every Khmer char is 3 UTF-8 bytes). 225 tokens is only ~102 chars,
+            # which silently truncated over half of all real utterances
+            # mid-word. 440 is the ceiling: max_target_positions (448) minus the
+            # 4-token <|sot|><|km|><|transcribe|><|notimestamps|> prefix.
+            max_new_tokens=MAX_NEW_TOKENS,
         )
     text = processor.tokenizer.batch_decode(predicted_ids, skip_special_tokens=True)[0]
     return normalize_khmer(text)

@@ -8,6 +8,7 @@ Usage:
 
 import csv
 import json
+import random
 import re
 import sys
 import time
@@ -159,17 +160,40 @@ def checkpoint_epoch(ckpt: str) -> int:
     return 0
 
 
-def record_eval_history(epoch: int, ckpt_name: str, cer: float, wer: float, eval_loss: float):
+def eval_signature(entry: dict) -> tuple:
+    """What makes two CER numbers comparable.
+
+    A CER over 1000 subsampled utterances at beams=1 is not the same quantity as
+    one over the full 4807 at beams=2, and neither is comparable to a number
+    produced before the 225-token decode cap was lifted. Entries missing these
+    fields are pre-fix records, tagged so they never win a comparison.
+    """
+    return (entry.get("split", "val"), entry.get("samples"), entry.get("beams"),
+            entry.get("max_gen_len", 225))
+
+
+def record_eval_history(epoch: int, ckpt_name: str, cer: float, wer: float,
+                        eval_loss: float, split: str, samples: int, beams: int):
     history = []
     if EVAL_HISTORY_FILE.exists():
         with open(EVAL_HISTORY_FILE, encoding="utf-8") as f:
             history = json.load(f)
-    history = [e for e in history if e["epoch"] != epoch]
-    history.append({"epoch": epoch, "checkpoint": ckpt_name, "cer": cer, "wer": wer, "eval_loss": eval_loss})
-    history.sort(key=lambda e: e["epoch"])
+    entry = {"epoch": epoch, "checkpoint": ckpt_name, "cer": cer, "wer": wer,
+             "eval_loss": eval_loss, "split": split, "samples": samples,
+             "beams": beams, "max_gen_len": 448}
+    sig = eval_signature(entry)
+    history = [e for e in history if not (e["epoch"] == epoch and eval_signature(e) == sig)]
+    history.append(entry)
+    history.sort(key=lambda e: (e["epoch"], str(eval_signature(e))))
     with open(EVAL_HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, indent=2)
     return history
+
+
+def _flag(name, cast, default):
+    if name in sys.argv:
+        return cast(sys.argv[sys.argv.index(name) + 1])
+    return default
 
 
 def main():
@@ -183,8 +207,16 @@ def main():
         print("No checkpoint found.")
         return
 
-    print(f"Evaluating checkpoint: {ckpt}")
-    _tg(f"Eval STARTED\nCheckpoint: {ckpt}\nVal samples: 4807\nEst. time: ~20 min")
+    # Loop-driver flags: which split to score, decode width, and a machine-readable
+    # result file so train_loop.py doesn't have to scrape stdout.
+    split     = _flag("--split", str, "val")
+    beams     = _flag("--beams", int, 2)
+    json_out  = _flag("--json-out", str, "")
+    record    = "--no-record" not in sys.argv
+    eval_csv  = Path("data") / f"{split}.csv"
+
+    print(f"Evaluating checkpoint: {ckpt}  (split={split}, beams={beams})")
+    _tg(f"Eval STARTED\nCheckpoint: {ckpt}\nSplit: {split}\nBeams: {beams}")
 
     processor = WhisperProcessor.from_pretrained(BASE_MODEL, language=LANGUAGE, task=TASK)
     model = WhisperForConditionalGeneration.from_pretrained(ckpt)
@@ -198,7 +230,16 @@ def main():
 
     decoder_start_token_id = model.config.decoder_start_token_id
 
-    val_ds   = KhmerASRDataset(VAL_CSV, processor)
+    val_ds   = KhmerASRDataset(eval_csv, processor)
+
+    # Scoring all 4.8k utterances takes over an hour, which makes a multi-round
+    # loop eval-bound. A fixed-seed subsample keeps rounds comparable to each
+    # other while staying cheap; the loop re-scores the full split at the end.
+    n_eval = _flag("--eval-samples", int, 0)
+    if n_eval and n_eval < len(val_ds.rows):
+        rng = random.Random(1234)          # fixed: every round scores the SAME utterances
+        val_ds.rows = rng.sample(val_ds.rows, n_eval)
+        print(f"Subsampled eval set to {len(val_ds.rows)} utterances (seed 1234).")
     collator = DataCollatorSpeechSeq2SeqWithPadding(
         processor=processor,
         decoder_start_token_id=decoder_start_token_id,
@@ -210,8 +251,13 @@ def main():
         bf16                    = BF16,
         fp16                    = False,
         predict_with_generate   = True,
-        generation_max_length   = 225,
-        generation_num_beams    = 2,
+        # 448 = model.config.max_target_positions. The old value of 225 capped
+        # decoding at ~102 Khmer characters (Khmer is ~2.2 tokens/char under
+        # Whisper's byte-fallback BPE), which truncated 51% of val references
+        # mid-word. That truncation, not the acoustic model, produced most of
+        # the 17.48% CER reported for epoch 5.
+        generation_max_length   = 448,
+        generation_num_beams    = beams,
         report_to               = "none",
         remove_unused_columns   = False,
         dataloader_num_workers  = NUM_WORKERS,
@@ -236,9 +282,28 @@ def main():
     mins = round(elapsed / 60, 1)
 
     epoch = checkpoint_epoch(ckpt)
-    history = record_eval_history(epoch, Path(ckpt).name, cer, wer, loss)
-    first_cer = history[0]["cer"]
-    trend_line = f"Epoch {history[0]['epoch']} CER was {first_cer}% — total improvement: {round(first_cer - cer, 2)}%"
+    prior = []
+    if EVAL_HISTORY_FILE.exists():
+        with open(EVAL_HISTORY_FILE, encoding="utf-8") as f:
+            prior = json.load(f)
+    # "Best" must mean lowest CER, not most recently scored. This used to
+    # overwrite checkpoints/best/ on every eval, so a worse round would clobber
+    # a better model — fatal once a loop is running unattended.
+    this_sig = (split, len(val_ds), beams, 448)
+    comparable = [e["cer"] for e in prior
+                  if e.get("cer") is not None and eval_signature(e) == this_sig]
+    prior_best = min(comparable, default=float("inf"))
+    is_best = cer < prior_best and "--no-promote" not in sys.argv
+
+    history = (record_eval_history(epoch, Path(ckpt).name, cer, wer, loss,
+                                   split, len(val_ds), beams) if record else prior)
+    same_setup = [e for e in history if eval_signature(e) == this_sig and e.get("cer") is not None]
+    if len(same_setup) > 1:
+        first = same_setup[0]
+        trend_line = (f"First comparable run (epoch {first['epoch']}) was {first['cer']}% "
+                      f"— change: {round(first['cer'] - cer, 2)} pts")
+    else:
+        trend_line = "First run at this split/beams/length setting — no comparable history yet."
 
     report = (
         f"EPOCH {epoch} EVAL COMPLETE - KASEKOR ASR v0.0\n"
@@ -247,11 +312,14 @@ def main():
         f"WER       : {wer}%\n"
         f"Eval loss : {loss}\n\n"
         f"Checkpoint: {Path(ckpt).name}\n"
-        f"Val samples: {len(val_ds)}\n"
+        f"Split     : {split} ({len(val_ds)} samples, beams={beams})\n"
         f"Eval time : {mins} min\n"
         f"{'='*30}\n"
         f"{trend_line}\n"
-        f"Model saved → checkpoints/best/\n\n"
+        + ("NEW BEST — promoted to checkpoints/best/\n\n" if is_best
+           else f"Not promoted (best at this setting: "
+                f"{'none yet' if prior_best == float('inf') else str(prior_best) + '%'})\n\n")
+        +
         f"APP INTEGRATION\n"
         f"{'='*30}\n"
         f"Model path : checkpoints/best/\n"
@@ -268,12 +336,29 @@ def main():
     print(report)
     _tg(report)
 
-    # Save final model to best/ after eval
+    # Only promote to best/ when this really is the lowest CER seen.
     best_dir = OUTPUT_DIR / "best"
-    trainer.save_model(str(best_dir))
-    from transformers import WhisperProcessor as _P
-    _P.from_pretrained(BASE_MODEL, language=LANGUAGE, task=TASK).save_pretrained(str(best_dir))
-    print(f"Model + processor saved to {best_dir}/")
+    if is_best:
+        trainer.save_model(str(best_dir))
+        from transformers import WhisperProcessor as _P
+        _P.from_pretrained(BASE_MODEL, language=LANGUAGE, task=TASK).save_pretrained(str(best_dir))
+        prev = "none yet" if prior_best == float("inf") else f"{prior_best}%"
+        print(f"NEW BEST ({cer}%, previous {prev}) — model + processor saved to {best_dir}/")
+    else:
+        why = "--no-promote set" if "--no-promote" in sys.argv else f"does not beat {prior_best}%"
+        print(f"Not promoted: {cer}% — {why}. {best_dir}/ left untouched.")
+
+    if json_out:
+        out = Path(json_out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump({
+                "checkpoint": str(ckpt), "epoch": epoch, "split": split,
+                "beams": beams, "samples": len(val_ds),
+                "cer": cer, "wer": wer, "eval_loss": loss,
+                "minutes": mins, "is_best": is_best, "prior_best": prior_best,
+            }, f, indent=2)
+        print(f"Result JSON -> {out}")
 
 
 if __name__ == "__main__":

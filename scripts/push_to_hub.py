@@ -20,7 +20,7 @@ from pathlib import Path
 
 from huggingface_hub import HfApi, upload_folder
 
-DEFAULT_REPO = "chamroeunhongleng/kaskor-asr"
+DEFAULT_REPO = "Hongleng/kasekor-asr-v0.0"  # "chamroeunhongleng/..." does not exist on the Hub (401)
 
 
 def main():
