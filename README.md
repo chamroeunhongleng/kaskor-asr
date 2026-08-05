@@ -1,5 +1,6 @@
 # KASEKOR ASR
 
+[![CI](https://github.com/chamroeunhongleng/kaskor-asr/actions/workflows/ci.yml/badge.svg)](https://github.com/chamroeunhongleng/kaskor-asr/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Model](https://img.shields.io/badge/model-whisper--small-blue)](https://huggingface.co/openai/whisper-small)
 [![CER](https://img.shields.io/badge/CER-3.74%25%20(val%2C%20seen%20speakers)-blue)](#results)
@@ -140,6 +141,7 @@ python scripts/push_to_hub.py
 ## Repository layout
 
 ```
+.github/         CI — proves the package installs and the released model id still resolves
 data/            train / val / test manifests (audio_path, transcript, speaker_id)
 scripts/         the numbered pipeline + eval + inference
 kaskor/          installable package backing the `kaskor` CLI (pip install git+...)
