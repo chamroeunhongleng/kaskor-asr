@@ -7,7 +7,8 @@ name = "kaskor-asr"
 version = "0.0.1"
 description = "Khmer (ខ្មែរ) speech-to-text — Whisper fine-tuned inference CLI"
 readme = "README.md"
-requires-python = ">=3.10"
+# numpy>=2.4 publishes no wheels below 3.11, so ">=3.10" was unresolvable.
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [{ name = "Chamroeun Hongleng" }]
 dependencies = [

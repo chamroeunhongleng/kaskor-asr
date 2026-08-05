@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly. The released model id can stop resolving on the Hub without
+    # anyone pushing a commit here, so this check cannot only run on push.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  model-id:
+    name: Released model id resolves on the Hub
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Check the shipped model id against the Hub
+        # Pure stdlib — reads DEFAULT_MODEL out of kaskor/cli.py with ast, so it
+        # needs neither torch nor transformers and finishes in seconds.
+        run: python scripts/check_model_id.py
+
+  install:
+    name: Install path (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the floor declared in pyproject.toml; numpy>=2.4 does not
+        # publish wheels below it.
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install CPU-only torch
+        # The default PyPI wheel drags in the whole CUDA stack, which CI has no
+        # GPU for and no reason to download.
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install the package
+        run: pip install -e .
+
+      - name: The CLI entry point runs
+        run: kaskor --help
+
+      - name: Every shipped module compiles
+        run: python -m compileall -q kaskor scripts
