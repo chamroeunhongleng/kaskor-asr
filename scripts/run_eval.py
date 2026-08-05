@@ -40,6 +40,11 @@ CACHE_DIR  = Path(__file__).resolve().parent.parent / "datasets" / "mel_cache"
 BATCH_SIZE = 8
 SR         = 16000
 MAX_SAMPLES = SR * 30
+# The decode cap, in one place. It is written into every eval_history entry
+# AND into the comparison signature, so changing it here can never silently
+# make numbers measured at two different caps look comparable — the failure
+# that produced the retracted 17.48% CER.
+MAX_GEN_LEN = 448   # = model.config.max_target_positions
 BF16        = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
 NUM_WORKERS = 2
 
@@ -105,7 +110,7 @@ class KhmerASRDataset(Dataset):
             ).input_features[0]
 
         labels = self.processor.tokenizer(
-            row["transcript"], return_tensors="pt", max_length=448, truncation=True,
+            row["transcript"], return_tensors="pt", max_length=MAX_GEN_LEN, truncation=True,
         ).input_ids[0]
         return {"input_features": input_features, "labels": labels}
 
@@ -180,7 +185,7 @@ def record_eval_history(epoch: int, ckpt_name: str, cer: float, wer: float,
             history = json.load(f)
     entry = {"epoch": epoch, "checkpoint": ckpt_name, "cer": cer, "wer": wer,
              "eval_loss": eval_loss, "split": split, "samples": samples,
-             "beams": beams, "max_gen_len": 448}
+             "beams": beams, "max_gen_len": MAX_GEN_LEN}
     sig = eval_signature(entry)
     history = [e for e in history if not (e["epoch"] == epoch and eval_signature(e) == sig)]
     history.append(entry)
@@ -251,12 +256,12 @@ def main():
         bf16                    = BF16,
         fp16                    = False,
         predict_with_generate   = True,
-        # 448 = model.config.max_target_positions. The old value of 225 capped
+        # MAX_GEN_LEN is model.config.max_target_positions. The old value of 225 capped
         # decoding at ~102 Khmer characters (Khmer is ~2.2 tokens/char under
         # Whisper's byte-fallback BPE), which truncated 51% of val references
         # mid-word. That truncation, not the acoustic model, produced most of
         # the 17.48% CER reported for epoch 5.
-        generation_max_length   = 448,
+        generation_max_length   = MAX_GEN_LEN,
         generation_num_beams    = beams,
         report_to               = "none",
         remove_unused_columns   = False,
@@ -289,7 +294,7 @@ def main():
     # "Best" must mean lowest CER, not most recently scored. This used to
     # overwrite checkpoints/best/ on every eval, so a worse round would clobber
     # a better model — fatal once a loop is running unattended.
-    this_sig = (split, len(val_ds), beams, 448)
+    this_sig = (split, len(val_ds), beams, MAX_GEN_LEN)
     comparable = [e["cer"] for e in prior
                   if e.get("cer") is not None and eval_signature(e) == this_sig]
     prior_best = min(comparable, default=float("inf"))
